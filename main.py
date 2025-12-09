@@ -1,64 +1,79 @@
-from fastapi import FastAPI
-from database import Base, engine, SessionLocal
+from fastapi import FastAPI, Depends, HTTPException, status, Header, Query
+from sqlalchemy.orm import Session
+from typing import Optional, List
+
+from database import SessionLocal, Base, engine
 from models import Item
-from seed_data import init_db
 
-app = FastAPI()
+# Create tables on startup
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="Secure Data API")
+
+API_KEY = "014dk58dba90olkd4" # <-- you can replace this
 
 
-# ----------------------------------------
-# AUTO-SEED DATABASE ON SERVER START
-# ----------------------------------------
-
-def seed_once():
-    """
-    Seeds database ONLY if it's empty.
-    Safe for Render – runs every boot but inserts only once.
-    """
+# --- DB DEPENDENCY ---
+def get_db():
     db = SessionLocal()
     try:
-        # check for existing data
-        item_exists = db.query(Item).first()
-        if not item_exists:
-            print("No data found — running seed_data.init_db()...")
-            init_db()
-        else:
-            print("Data already present — skipping seeding.")
-    except Exception as e:
-        print("Seeding error:", e)
+        yield db
     finally:
         db.close()
 
 
-# Run seeding immediately when Render starts the app
-seed_once()
-
-# -----------------------------------------------------
-# API ROUTES
-# -----------------------------------------------------
-
-@app.get("/")
-def home():
-    return {"message": "API is running!"}
-
-
-@app.get("/items")
-def get_items():
-    db = SessionLocal()
-    try:
-        items = db.query(Item).all()
-        return items
-    finally:
-        db.close()
+# --- SECURITY ---
+def verify_api_key(
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    api_key_query: Optional[str] = Query(default=None, alias="api_key")
+):
+    key = x_api_key or api_key_query
+    if key != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key"
+        )
+    return True
 
 
-@app.get("/items/{key}")
-def get_item_by_key(key: str):
-    db = SessionLocal()
-    try:
-        item = db.query(Item).filter(Item.key == key).first()
-        if item:
-            return item
-        return {"error": "Item not found"}
-    finally:
-        db.close()
+# --- CONVERTER ---
+def item_to_dict(item: Item) -> dict:
+    return {
+        "id": item.id,
+        "key": item.key,
+        "name": item.name,
+        "description": item.description
+    }
+
+
+# --- ROUTES ---
+@app.get("/items", dependencies=[Depends(verify_api_key)])
+def get_items(db: Session = Depends(get_db)):
+    items = db.query(Item).all()
+    return [item_to_dict(i) for i in items]
+
+
+@app.get("/items/{item_key}", dependencies=[Depends(verify_api_key)])
+def get_item(item_key: str, db: Session = Depends(get_db)):
+    item = db.query(Item).filter(Item.key == item_key).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return item_to_dict(item)
+
+
+@app.post("/items", dependencies=[Depends(verify_api_key)])
+def create_item(
+    key: str,
+    name: str,
+    description: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    existing = db.query(Item).filter(Item.key == key).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Key already exists")
+
+    item = Item(key=key, name=name, description=description)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item_to_dict(item)
