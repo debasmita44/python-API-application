@@ -6,16 +6,20 @@ from typing import Optional, List
 from database import SessionLocal, engine, Base
 from models import Item
 
-# Make sure tables exist (in case seed not run)
+
+# --- CREATE TABLES ---
+print("⏳ Creating tables...")
 Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="Secure Data API")
-
-# 🔐 Simple API key (in real life, use env vars or a secrets manager)
-API_KEY = "014dk58dba90olkd4"  # change this to anything you like
+print("✅ Tables ready")
 
 
-# --- DB DEPENDENCY ---
+app = FastAPI(title="Secure Data API on Render")
+
+
+# --- SECURITY ---
+API_KEY = "014dk58dba90olkd4" # You can change this
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -24,16 +28,10 @@ def get_db():
         db.close()
 
 
-# --- SECURITY DEPENDENCY ---
 def verify_api_key(
     x_api_key: Optional[str] = Header(default=None),
     api_key_query: Optional[str] = Query(default=None, alias="api_key"),
 ):
-    """
-    Accept API key either in:
-      - Header: X-API-Key: <key>
-      - Query: ?api_key=<key>
-    """
     key = x_api_key or api_key_query
     if key != API_KEY:
         raise HTTPException(
@@ -43,8 +41,7 @@ def verify_api_key(
     return True
 
 
-# --- RESPONSE SCHEMA (simple manual dicts) ---
-def item_to_dict(item: Item) -> dict:
+def item_to_dict(item: Item):
     return {
         "id": item.id,
         "key": item.key,
@@ -53,22 +50,16 @@ def item_to_dict(item: Item) -> dict:
     }
 
 
-# --- ROUTES ---
-
 @app.get("/items", dependencies=[Depends(verify_api_key)])
-def get_all_items(db: Session = Depends(get_db)) -> List[dict]:
-    items = db.query(Item).all()
-    return [item_to_dict(i) for i in items]
+def get_all_items(db: Session = Depends(get_db)):
+    return [item_to_dict(i) for i in db.query(Item).all()]
 
 
 @app.get("/items/{item_key}", dependencies=[Depends(verify_api_key)])
-def get_item_by_key(item_key: str, db: Session = Depends(get_db)) -> dict:
+def get_item_by_key(item_key: str, db: Session = Depends(get_db)):
     item = db.query(Item).filter(Item.key == item_key).first()
     if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Item with key '{item_key}' not found",
-        )
+        raise HTTPException(404, f"Item with key '{item_key}' not found")
     return item_to_dict(item)
 
 
@@ -77,19 +68,14 @@ def create_item(
     key: str,
     name: str,
     description: Optional[str] = None,
-    db: Session = Depends(get_db),
-) -> dict:
-    # check if key exists
-    existing = db.query(Item).filter(Item.key == key).first()
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Item with key '{key}' already exists",
-        )
+    db: Session = Depends(get_db)
+):
+    if db.query(Item).filter(Item.key == key).first():
+        raise HTTPException(400, f"Item with key '{key}' already exists")
 
-    new_item = Item(key=key, name=name, description=description)
-    db.add(new_item)
+    item = Item(key=key, name=name, description=description)
+    db.add(item)
     db.commit()
-    db.refresh(new_item)
-    return item_to_dict(new_item)
+    db.refresh(item)
 
+    return item_to_dict(item)
